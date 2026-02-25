@@ -6,7 +6,7 @@ venv/
 env/
 .env
 
-# Data & Vaults (CRITICAL: DO NOT COMMIT)
+# Data & Vaults
 data/
 *.json
 *.enc
@@ -25,3 +25,4 @@ Desktop.ini
 
 # AI Models (Large git-lfs tracking size limit)
 models/
+
