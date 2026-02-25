@@ -6,7 +6,7 @@ God's Hands is a local storage system designed for absolute privacy and mathemat
 
 Unlike conventional time-lock mechanisms that rely on system clocks or centralized middle-ware, God's Hands binds encryption keys to the NIST Randomness Beacon. This ensures that the cryptographic variables required for decryption literally do not exist until they are broadcast by the beacon at the specified time.
 
-> ⚠️ **DIVINE PERMANENCE:** This vault is bound to this specific hardware. If this computer dies, your secrets die with it. There is no back door.
+> ⚠️ **DIVINE PERMANENCE:** This vault is bound to whatever specific hardware you use. If your computer dies, your secrets die with it. There is no back door.
 
 ---
 
@@ -98,3 +98,4 @@ God's Hands is dual-licensed:
 2. **Commercial License:** If you wish to use God's Hands logic or code within a closed-source/commercial product, a separate commercial license is required.
 
 For commercial inquiries, please contact the author.
+
