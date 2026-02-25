@@ -1,0 +1,27 @@
+# Python stuff
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Data & Vaults (CRITICAL: DO NOT COMMIT)
+data/
+*.json
+*.enc
+*.key
+*.tmp
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# AI Models (Large git-lfs tracking size limit)
+models/

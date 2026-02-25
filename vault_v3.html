@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>God's Hands v3.0</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        deep: '#0D0D0D',
+                        primary: '#9B8AFF',
+                        unlocked: '#4ADE80'
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Framer Motion -->
+    <script src="https://cdn.jsdelivr.net/npm/framer-motion@10.16.4/dist/framer-motion.js"></script>
+
+    <style>
+        body {
+            background-color: #0D0D0D;
+            color: white;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        /* Hide scrollbar for Zen-style */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            /* IE and Edge */
+            scrollbar-width: none;
+            /* Firefox */
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useRef } = React;
+        const { motion, AnimatePresence } = window.Motion || { motion: { div: 'div', button: 'button', span: 'span' }, AnimatePresence: ({ children }) => children };
+
+        const FateCard = ({ secret, onReveal, message }) => {
+            const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+            const [now, setNow] = useState(Date.now() / 1000);
+            const [deleteStep, setDeleteStep] = useState(0); // 0=idle, 1=first confirm, 2=final warning
+            const cardRef = useRef(null);
+
+            useEffect(() => {
+                const interval = setInterval(() => setNow(Date.now() / 1000), 1000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const handleMouseMove = (e) => {
+                if (!cardRef.current) return;
+                const rect = cardRef.current.getBoundingClientRect();
+                setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            };
+
+            const unlockTs = secret.unlock_timestamp;
+            const remaining = Math.max(0, unlockTs - now);
+            const isUnlocked = remaining === 0;
+
+            const formatTime = (seconds) => {
+                if (seconds <= 0) return "UNLOCKED";
+                const d = Math.floor(seconds / (3600 * 24));
+                const h = Math.floor(seconds % (3600 * 24) / 3600);
+                const m = Math.floor(seconds % 3600 / 60);
+                const s = Math.floor(seconds % 60);
+
+                if (d > 0) return `${d}d ${h}h ${m}m ${s}s`;
+                if (h > 0) return `${h}h ${m}m ${s}s`;
+                return `${m}m ${s}s`;
+            };
+
+            return (
+                <div
+                    ref={cardRef}
+                    onMouseMove={handleMouseMove}
+                    className="relative overflow-hidden group bg-white/5 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-5 mb-4 max-w-sm w-full transition-all duration-300 hover:border-white/20"
+                >
+                    {/* Radial Glow */}
+                    <div
+                        className="pointer-events-none absolute -inset-px opacity-0 group-hover:opacity-100 transition duration-300"
+                        style={{
+                            background: `radial-gradient(400px circle at ${mousePos.x}px ${mousePos.y}px, rgba(155, 138, 255, 0.15), transparent 40%)`
+                        }}
+                    />
+
+                    {/* Delete confirm overlay — step 2 final warning */}
+                    <AnimatePresence>
+                        {deleteStep === 2 && (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="absolute inset-0 z-20 bg-black/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center gap-3 p-5"
+                            >
+                                <p className="text-red-400 font-medium text-sm text-center">This is permanent. The fate will be erased forever.</p>
+                                <div className="flex gap-2 w-full">
+                                    <button
+                                        onClick={() => setDeleteStep(0)}
+                                        className="flex-1 py-2 rounded-xl bg-white/10 text-white/60 hover:bg-white/20 text-sm transition"
+                                    >Cancel</button>
+                                    <button
+                                        onClick={() => { setDeleteStep(0); message.onDelete(secret.name); }}
+                                        className="flex-1 py-2 rounded-xl bg-red-500/80 text-white font-semibold hover:bg-red-500 text-sm transition"
+                                    >Erase</button>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    <div className="relative z-10 flex flex-col gap-3">
+                        <div className="flex justify-between items-center text-sm">
+                            <span className="text-white/60 font-medium">Fate: <span className="text-white">"{secret.name}"</span></span>
+                            <span className="text-white/40 uppercase text-xs tracking-wider">{secret.type}</span>
+                        </div>
+
+                        <div className="flex justify-center items-center py-4">
+                            <motion.div
+                                animate={!isUnlocked ? { scale: [1, 1.02, 1] } : {}}
+                                transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                                className={`text-2xl font-bold tracking-tight tabular-nums ${isUnlocked ? 'text-unlocked' : 'text-white'}`}
+                            >
+                                {formatTime(remaining)}
+                            </motion.div>
+                        </div>
+
+                        {isUnlocked && (
+                            <motion.button
+                                whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => onReveal(secret.name)}
+                                className="w-full py-2.5 rounded-xl bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-colors font-medium text-sm"
+                            >
+                                Reveal Secret
+                            </motion.button>
+                        )}
+                        {secret.decrypted && (
+                            <div className="mt-2 p-3 bg-black/40 rounded-xl text-sm whitespace-pre-wrap border border-unlocked/30 text-white/90">
+                                {secret.decrypted}
+                            </div>
+                        )}
+
+                        {/* Delete button — step 0: trash icon, step 1: first confirm */}
+                        {deleteStep === 0 ? (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); setDeleteStep(1); }}
+                                className="absolute top-4 right-4 text-white/20 hover:text-red-400 transition-colors p-1"
+                                title="Forget this fate"
+                            >
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" /></svg>
+                            </button>
+                        ) : deleteStep === 1 ? (
+                            <div className="flex gap-2 mt-1">
+                                <button
+                                    onClick={() => setDeleteStep(0)}
+                                    className="flex-1 py-1.5 rounded-xl bg-white/5 border border-white/[0.08] text-white/50 hover:text-white text-xs transition"
+                                >Cancel</button>
+                                <button
+                                    onClick={() => setDeleteStep(2)}
+                                    className="flex-1 py-1.5 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 text-xs font-medium transition"
+                                >Forget?</button>
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            );
+        };
+
+        const ChatBubble = ({ message }) => {
+            const isUser = message.sender === 'user';
+            const isVault = message.type === 'vault';
+
+            const containerClass = isUser
+                ? "flex justify-end w-full mb-4"
+                : "flex justify-start w-full mb-4";
+
+            const bubbleClass = isUser
+                ? "bg-white/5 backdrop-blur-2xl border border-primary/30 text-primary px-4 py-3 rounded-2xl rounded-tr-sm max-w-[85%] text-sm"
+                : "text-white/70 px-4 py-3 max-w-[85%] text-sm";
+
+            return (
+                <motion.div
+                    layout
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ type: "spring", damping: 20, stiffness: 100 }}
+                    className={containerClass}
+                >
+                    {isVault ? (
+                        <FateCard secret={message.secret} onReveal={message.onReveal} message={message} />
+                    ) : (
+                        <div className={bubbleClass}>
+                            {message.text}
+                        </div>
+                    )}
+                </motion.div>
+            );
+        };
+
+        const App = () => {
+            const [messages, setMessages] = useState([]);
+            const [isSealing, setIsSealing] = useState(false);
+            const [showSealForm, setShowSealForm] = useState(false);
+            const [sealStep, setSealStep] = useState('form'); // 'form' | 'confirm'
+            const [showHelp, setShowHelp] = useState(false);
+            const [showClearConfirm, setShowClearConfirm] = useState(false);
+            const [sealName, setSealName] = useState("");
+            const [sealSecret, setSealSecret] = useState("");
+            const [sealMinutes, setSealMinutes] = useState("");
+            const [attachType, setAttachType] = useState(null);   // null | 'file' | 'folder'
+            const [attachPath, setAttachPath] = useState(null);
+            const [attachName, setAttachName] = useState(null);
+            const messagesEndRef = useRef(null);
+
+            useEffect(() => {
+                const init = async () => {
+                    addMessage("System connected. Master key verified.", 'system');
+                };
+
+                if (window.pywebview) {
+                    init();
+                } else {
+                    window.addEventListener('pywebviewready', init);
+                    setTimeout(() => {
+                        if (!window.pywebview) init();
+                    }, 500);
+                }
+
+                return () => window.removeEventListener('pywebviewready', init);
+            }, []);
+
+            const fetchLocks = async () => {
+                const api = window.pywebview?.api;
+                if (api && api.get_all_locks) {
+                    try {
+                        const locks = await api.get_all_locks();
+                        if (locks && locks.length > 0) {
+                            addMessage(`Syncing ${locks.length} destiny threads...`, 'system');
+                            setTimeout(() => {
+                                locks.forEach(lock => {
+                                    setMessages(prev => [...prev, {
+                                        id: Date.now() + Math.random(),
+                                        type: 'vault',
+                                        sender: 'system',
+                                        secret: lock,
+                                        onReveal: handleUnlock,
+                                        onDelete: handleDelete
+                                    }]);
+                                });
+                            }, 500);
+                        } else {
+                            addMessage("Your vault is empty.", 'system', 500);
+                        }
+                    } catch (err) {
+                        addMessage(`Connection error: ${err.message}`, 'system');
+                    }
+                } else {
+                    addMessage("PyWebView bridge not found. Mock mode.", 'system', 500);
+                }
+            };
+
+            const handleDelete = async (name) => {
+                const api = window.pywebview?.api;
+                if (api && api.delete_lock) {
+                    try {
+                        const success = await api.delete_lock(name);
+                        if (success) {
+                            setMessages(prev => prev.filter(m => !(m.type === 'vault' && m.secret.name === name)));
+                            addMessage(`Fate "${name}" has been forgotten.`, 'system');
+                        }
+                    } catch (e) {
+                        addMessage(`Failed to delete: ${e.message}`, 'system');
+                    }
+                }
+            };
+
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            };
+
+            useEffect(() => { scrollToBottom(); }, [messages]);
+
+            const addMessage = (text, sender = 'system', delay = 0) => {
+                setTimeout(() => {
+                    setMessages(prev => [...prev, { id: Date.now() + Math.random(), text, sender }]);
+                }, delay);
+            };
+
+            const handlePickFile = async () => {
+                const api = window.pywebview?.api;
+                if (!api?.pick_file) { addMessage("File picker requires the desktop app.", 'system'); return; }
+                try {
+                    const path = await api.pick_file();
+                    if (path) {
+                        setAttachType('file');
+                        setAttachPath(path);
+                        setAttachName(path.split(/[\\/]/).pop());
+                        setSealSecret(""); // clear text when file attached
+                    }
+                } catch (e) { addMessage(`File picker error: ${e}`, 'system'); }
+            };
+
+            const handlePickFolder = async () => {
+                const api = window.pywebview?.api;
+                if (!api?.pick_folder) { addMessage("Folder picker requires the desktop app.", 'system'); return; }
+                try {
+                    const path = await api.pick_folder();
+                    if (path) {
+                        setAttachType('folder');
+                        setAttachPath(path);
+                        setAttachName(path.split(/[\\/]/).pop());
+                        setSealSecret("");
+                    }
+                } catch (e) { addMessage(`Folder picker error: ${e}`, 'system'); }
+            };
+
+            const clearAttachment = () => {
+                setAttachType(null);
+                setAttachPath(null);
+                setAttachName(null);
+            };
+
+            const executeLock = async (name, secret, minutes) => {
+                setIsSealing(true);
+                const api = window.pywebview?.api;
+                try {
+                    if (api && api.lock) {
+                        await api.lock(name, secret, minutes);
+                    }
+                    setTimeout(() => {
+                        setIsSealing(false);
+                        addMessage(`Fate "${name}" sealed for ${minutes} minutes.`, 'system');
+                        setMessages(prev => prev.filter(m => m.type !== 'vault'));
+                        fetchLocks();
+                    }, 1500);
+                } catch (e) {
+                    setIsSealing(false);
+                    addMessage(`Failed to seal: ${e}`, 'system');
+                }
+            };
+
+            const handleUnlock = async (name) => {
+                addMessage(`Unlocking "${name}"...`, 'system');
+                const api = window.pywebview?.api;
+                if (api && api.reveal) {
+                    try {
+                        const result = await api.reveal(name);
+                        if (result.type === 'large_file') {
+                            // Save file to Downloads
+                            if (api.reveal_large) {
+                                const savePath = await api.reveal_large(name, result.original_filename || name);
+                                addMessage(`"${result.original_filename}" saved to Downloads.`, 'system');
+                                setMessages(prev => prev.map(msg => {
+                                    if (msg.type === 'vault' && msg.secret.name === name) {
+                                        return { ...msg, secret: { ...msg.secret, decrypted: `Output Path: ${savePath}` } };
+                                    }
+                                    return msg;
+                                }));
+                            }
+                        } else {
+                            setMessages(prev => prev.map(msg => {
+                                if (msg.type === 'vault' && msg.secret.name === name) {
+                                    return { ...msg, secret: { ...msg.secret, decrypted: result.secret } };
+                                }
+                                return msg;
+                            }));
+                            addMessage(`Fate "${name}" accepted.`, 'system');
+                        }
+                    } catch (err) {
+                        addMessage(`Reveal failed: ${err}`, 'system');
+                    }
+                } else {
+                    addMessage(`Mock reveal: Hello world!`, 'system');
+                }
+            };
+
+            const handleLockValidate = () => {
+                const name = sealName.trim();
+                const minutes = parseFloat(sealMinutes);
+                if (!name) { addMessage("Please enter a name.", 'system'); return; }
+                if (isNaN(minutes) || minutes <= 0) { addMessage("Please enter a valid duration.", 'system'); return; }
+                if (!attachType && !sealSecret.trim()) { addMessage("Please add a secret or attach a file.", 'system'); return; }
+                setSealStep('confirm');
+            };
+
+            const handleLockConfirm = async () => {
+                const name = sealName.trim();
+                const minutes = parseFloat(sealMinutes);
+                const api = window.pywebview?.api;
+                try {
+                    if (attachType === 'file' && attachPath) {
+                        addMessage(`Sealing file "${attachName}" as "${name}"...`, 'user');
+                        setIsSealing(true);
+                        if (api?.lock_file) await api.lock_file(name, attachPath, minutes);
+                        setTimeout(() => { setIsSealing(false); addMessage(`File "${attachName}" sealed for ${minutes} min.`, 'system'); setMessages(prev => prev.filter(m => m.type !== 'vault')); fetchLocks(); }, 1500);
+                    } else if (attachType === 'folder' && attachPath) {
+                        addMessage(`Sealing folder "${attachName}" as "${name}"...`, 'user');
+                        setIsSealing(true);
+                        if (api?.lock_folder) await api.lock_folder(name, attachPath, minutes);
+                        setTimeout(() => { setIsSealing(false); addMessage(`Folder "${attachName}" sealed for ${minutes} min.`, 'system'); setMessages(prev => prev.filter(m => m.type !== 'vault')); fetchLocks(); }, 1500);
+                    } else {
+                        const secret = sealSecret.trim();
+                        addMessage(`Sealing "${name}" for ${minutes} minutes...`, 'user');
+                        executeLock(name, secret, minutes);
+                    }
+                } catch (e) {
+                    setIsSealing(false);
+                    addMessage(`Seal failed: ${e}`, 'system');
+                }
+                setSealName(""); setSealSecret(""); setSealMinutes("");
+                clearAttachment(); setSealStep('form'); setShowSealForm(false);
+            };
+
+            const handleShowVault = () => {
+                setMessages(prev => prev.filter(m => m.type !== 'vault'));
+                fetchLocks();
+            };
+
+            const handleClear = () => {
+                setShowClearConfirm(true);
+            };
+
+            const confirmClear = () => {
+                setShowClearConfirm(false);
+                setMessages([]);
+                addMessage("Chat cleared.", 'system');
+            };
+
+            return (
+                <div className="flex flex-col h-screen max-w-[500px] mx-auto relative bg-[#0D0D0D] overflow-hidden">
+
+                    {/* Shimmer Overlay on Sealing */}
+                    <AnimatePresence>
+                        {isSealing && (
+                            <motion.div
+                                initial={{ x: '-100%', opacity: 0 }}
+                                animate={{ x: '100%', opacity: 0.8 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 1.5, ease: "linear" }}
+                                className="absolute inset-0 z-50 pointer-events-none"
+                                style={{
+                                    background: 'linear-gradient(90deg, transparent, rgba(155, 138, 255, 0.2), transparent)'
+                                }}
+                            />
+                        )}
+                    </AnimatePresence>
+
+                    {/* Header */}
+                    <div className="flex-none pt-10 pb-6 px-6 relative z-20 flex justify-center items-center bg-gradient-to-b from-[#0D0D0D] via-[#0D0D0D] to-transparent">
+                        <motion.div
+                            animate={{ opacity: [0.5, 1, 0.5] }}
+                            transition={{ repeat: Infinity, duration: 3 }}
+                            className="text-primary text-3xl font-light tracking-widest"
+                            style={{ textShadow: '0 0 20px rgba(155,138,255,0.4)' }}
+                        >
+                            ✦
+                        </motion.div>
+                    </div>
+
+                    {/* Chat Area */}
+                    <div className="flex-1 overflow-y-auto no-scrollbar px-6 pb-48 flex flex-col pt-4">
+                        {messages.map((msg, i) => (
+                            <ChatBubble key={msg.id} message={msg} />
+                        ))}
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Bottom Dock */}
+                    <div className="absolute bottom-0 w-full p-4 bg-gradient-to-t from-[#0D0D0D] via-[#0D0D0D] to-transparent z-20">
+
+                        {/* Help Panel */}
+                        <AnimatePresence>
+                            {showHelp && (
+                                <motion.div
+                                    layout
+                                    initial={{ y: 20, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    exit={{ y: 20, opacity: 0 }}
+                                    className="mb-3 bg-white/5 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-5 shadow-lg shadow-black/50"
+                                >
+                                    <div className="flex justify-between items-center mb-3">
+                                        <span className="text-white font-medium text-sm">God's Hands</span>
+                                        <button onClick={() => setShowHelp(false)} className="text-white/40 hover:text-white/70 transition-colors text-lg leading-none">&times;</button>
+                                    </div>
+                                    <div className="space-y-2 text-xs text-white/50 leading-relaxed">
+                                        <p>A time-locked vault for your most guarded secrets. Once sealed, nothing — not even you — can reveal a fate until time itself permits.</p>
+                                        <div className="border-t border-white/5 pt-2 mt-2 space-y-1">
+                                            <p><span className="text-white/70 font-medium">Seal</span> — Lock a secret behind a time barrier.</p>
+                                            <p><span className="text-white/70 font-medium">Vault</span> — View all stored fates and their countdowns.</p>
+                                            <p><span className="text-white/70 font-medium">Clear</span> — Clear the message history on screen.</p>
+                                        </div>
+                                        <div className="border-t border-white/5 pt-2 mt-2 space-y-1">
+                                            <p><span className="text-white/70 font-medium">Encryption</span> — AES-256 with machine-bound keys.</p>
+                                            <p><span className="text-white/70 font-medium">Time-lock</span> — Derived from NIST Randomness Beacon.</p>
+                                            <p><span className="text-white/70 font-medium">Storage</span> — Local only. Nothing leaves your machine.</p>
+                                        </div>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Seal Form */}
+                        <AnimatePresence>
+                            {showSealForm && (
+                                <motion.div
+                                    layout
+                                    initial={{ y: 20, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    exit={{ y: 20, opacity: 0 }}
+                                    className="mb-3 bg-white/5 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-4 shadow-lg shadow-black/50"
+                                >
+                                    <div className="flex justify-between items-center mb-3">
+                                        <span className="text-white/70 font-medium text-sm">
+                                            {sealStep === 'form' ? 'Seal a Fate' : 'Confirm Seal'}
+                                        </span>
+                                        <button onClick={() => { setShowSealForm(false); setSealStep('form'); }} className="text-white/40 hover:text-white/70 transition-colors text-lg leading-none">&times;</button>
+                                    </div>
+
+                                    {sealStep === 'form' ? (
+                                        <div className="space-y-2">
+                                            <input
+                                                type="text"
+                                                value={sealName}
+                                                onChange={(e) => setSealName(e.target.value)}
+                                                placeholder="Name (e.g. launch codes)"
+                                                className="w-full bg-black/40 border border-white/[0.08] rounded-xl px-3 py-2 text-white text-sm placeholder-white/25 outline-none focus:border-primary/50 transition-colors"
+                                            />
+                                            <textarea
+                                                value={sealSecret}
+                                                onChange={(e) => setSealSecret(e.target.value)}
+                                                placeholder="Secret content..."
+                                                rows={2}
+                                                className="w-full bg-black/40 border border-white/[0.08] rounded-xl px-3 py-2 text-white text-sm placeholder-white/25 outline-none focus:border-primary/50 transition-colors resize-none"
+                                            />
+
+                                            {/* Attachment picker */}
+                                            {attachType ? (
+                                                <div className="flex items-center gap-2 bg-primary/10 border border-primary/30 rounded-xl px-3 py-2">
+                                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#9B8AFF', flexShrink: 0 }}>
+                                                        {attachType === 'folder'
+                                                            ? <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+                                                            : <><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" /><polyline points="13 2 13 9 20 9" /></>}
+                                                    </svg>
+                                                    <span className="text-primary text-xs" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{attachName}</span>
+                                                    <button onClick={clearAttachment} style={{ color: 'rgba(255,255,255,0.4)', fontSize: '1.1rem', lineHeight: 1 }}>&times;</button>
+                                                </div>
+                                            ) : (
+                                                <div className="flex gap-2">
+                                                    <button onClick={handlePickFile} className="flex-1 flex items-center justify-center gap-1 py-2 bg-white/5 border border-white/[0.08] rounded-xl text-white/50 hover:text-white hover:border-white/20 text-xs transition">
+                                                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" /><polyline points="13 2 13 9 20 9" /></svg>
+                                                        File
+                                                    </button>
+                                                    <button onClick={handlePickFolder} className="flex-1 flex items-center justify-center gap-1 py-2 bg-white/5 border border-white/[0.08] rounded-xl text-white/50 hover:text-white hover:border-white/20 text-xs transition">
+                                                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>
+                                                        Folder
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="number"
+                                                    value={sealMinutes}
+                                                    onChange={(e) => setSealMinutes(e.target.value)}
+                                                    placeholder="Minutes"
+                                                    min="1"
+                                                    className="flex-1 bg-black/40 border border-white/[0.08] rounded-xl px-3 py-2 text-white text-sm placeholder-white/25 outline-none focus:border-primary/50 transition-colors"
+                                                />
+                                                <motion.button
+                                                    whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={handleLockValidate}
+                                                    className="flex-1 bg-primary text-black font-semibold py-2 rounded-xl hover:bg-primary/80 transition text-sm shadow-[0_0_15px_rgba(155,138,255,0.3)]"
+                                                >
+                                                    Review
+                                                </motion.button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            <div className="bg-black/40 border border-white/[0.08] rounded-xl p-3 space-y-2 text-sm">
+                                                <div className="flex justify-between">
+                                                    <span className="text-white/40">Name</span>
+                                                    <span className="text-white font-medium">{sealName}</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                    <span className="text-white/40">Duration</span>
+                                                    <span className="text-white font-medium">{sealMinutes} min</span>
+                                                </div>
+                                                <div className="border-t border-white/5 pt-2">
+                                                    <span className="text-white/40 text-xs">{attachType ? 'Attachment' : 'Secret'}</span>
+                                                    <p className="text-white/70 text-xs mt-1" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{attachType ? attachName : sealSecret}</p>
+                                                </div>
+                                            </div>
+                                            <p className="text-white/40 text-xs text-center">Once sealed, this cannot be undone until the timer expires.</p>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={() => setSealStep('form')}
+                                                    className="flex-1 py-2 rounded-xl bg-white/5 border border-white/[0.08] text-white/50 hover:text-white text-sm transition"
+                                                >Edit</button>
+                                                <motion.button
+                                                    whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={handleLockConfirm}
+                                                    className="flex-1 bg-primary text-black font-semibold py-2 rounded-xl hover:bg-primary/80 transition text-sm shadow-[0_0_15px_rgba(155,138,255,0.3)]"
+                                                >Lock Entry</motion.button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Clear Confirm */}
+                        <AnimatePresence>
+                            {showClearConfirm && (
+                                <motion.div
+                                    initial={{ y: 10, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    exit={{ y: 10, opacity: 0 }}
+                                    className="mb-3 bg-white/5 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-4 shadow-lg shadow-black/50"
+                                >
+                                    <p className="text-white/60 text-sm mb-3 text-center">Clear all messages from view?</p>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => setShowClearConfirm(false)}
+                                            className="flex-1 py-2 rounded-xl bg-white/5 border border-white/[0.08] text-white/50 hover:text-white text-sm transition"
+                                        >Cancel</button>
+                                        <button
+                                            onClick={confirmClear}
+                                            className="flex-1 py-2 rounded-xl bg-white/10 border border-white/20 text-white font-medium hover:bg-white/20 text-sm transition"
+                                        >Clear</button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Action Buttons */}
+                        <div className="flex gap-2">
+                            <motion.button
+                                whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => { setShowSealForm(!showSealForm); setShowHelp(false); setSealStep('form'); }}
+                                className={`flex-1 py-3 rounded-2xl font-medium text-sm transition-all ${showSealForm ? 'bg-primary text-black shadow-[0_0_15px_rgba(155,138,255,0.3)]' : 'bg-white/5 backdrop-blur-2xl border border-white/[0.08] text-white/60 hover:text-white hover:border-white/20'}`}
+                            >
+                                Seal
+                            </motion.button>
+                            <motion.button
+                                whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={handleShowVault}
+                                className="flex-1 bg-white/5 backdrop-blur-2xl border border-white/[0.08] text-white/60 hover:text-white hover:border-white/20 py-3 rounded-2xl font-medium text-sm transition-all"
+                            >
+                                Vault
+                            </motion.button>
+                            <motion.button
+                                whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={handleClear}
+                                className="flex-1 bg-white/5 backdrop-blur-2xl border border-white/[0.08] text-white/60 hover:text-white hover:border-white/20 py-3 rounded-2xl font-medium text-sm transition-all"
+                            >
+                                Clear
+                            </motion.button>
+                            <motion.button
+                                whileHover={{ scale: 0.98, filter: "brightness(1.1)" }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => { setShowHelp(!showHelp); setShowSealForm(false); }}
+                                className={`flex-1 py-3 rounded-2xl font-medium text-sm transition-all ${showHelp ? 'bg-primary text-black shadow-[0_0_15px_rgba(155,138,255,0.3)]' : 'bg-white/5 backdrop-blur-2xl border border-white/[0.08] text-white/60 hover:text-white hover:border-white/20'}`}
+                            >
+                                Help
+                            </motion.button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>

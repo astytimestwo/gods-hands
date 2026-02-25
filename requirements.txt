@@ -1,0 +1,4 @@
+cryptography==46.0.5
+pywebview>=6.1
+requests>=2.32
+llama-cpp-python>=0.3.0
