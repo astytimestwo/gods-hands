@@ -7,41 +7,14 @@ import zipfile
 import io
 from pathlib import Path
 from vault_logic import Vault, VaultError, VaultLockedError, VaultOfflineError
-from intelligence import AIInstaller, Intelligence
 
 class VaultAPI:
     def __init__(self):
         self._vault = Vault()
-        self._ai = Intelligence()
         self._window = None
 
     def set_window(self, window):
         self._window = window
-
-    def get_ai_status(self):
-        return AIInstaller.get_status()
-
-    def install_ai(self):
-        def _download_thread():
-            def progress_callback(progress):
-                if self._window:
-                    self._window.evaluate_js(f"window.dispatchEvent(new CustomEvent('ai_download_progress', {{detail: {progress}}}))")
-            
-            success = AIInstaller.download(progress_callback)
-            if success:
-                self._ai.initialize()
-                if self._window:
-                    self._window.evaluate_js("window.dispatchEvent(new Event('ai_download_complete'))")
-            else:
-                if self._window:
-                    self._window.evaluate_js("window.dispatchEvent(new Event('ai_download_failed'))")
-                    
-        thread = threading.Thread(target=_download_thread, daemon=True)
-        thread.start()
-        return True
-
-    def chat(self, text: str):
-        return self._ai.process_input(text)
 
     def get_all_locks(self):
         try:
@@ -91,12 +64,13 @@ class VaultAPI:
 
     def lock_folder(self, name: str, folderpath: str, minutes: float):
         """Zip folder to a temp file, stream-encrypt it, then delete the temp zip."""
-        import tempfile, zipfile
+        import tempfile
         try:
             folder = Path(folderpath)
             if not folder.is_dir():
                 raise ValueError(f"Not a folder: {folderpath}")
 
+            print("⚠️ WARNING: Folder is being zipped to your system's temp directory before encryption. If the application crashes or loses power during this process, an unencrypted ZIP of this folder may remain in your temp folder.")
             # Zip to a temp file on disk (streaming, not in memory)
             with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
                 tmp_path = Path(tmp.name)

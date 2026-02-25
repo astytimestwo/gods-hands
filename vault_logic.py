@@ -81,7 +81,7 @@ class Vault:
         Obfuscated to frustrate casual reverse engineering.
         """
         mac       = uuid.getnode()
-        sys_info  = f"{platform.node()}-{platform.machine()}-{platform.processor()}"
+        sys_info  = f"{platform.machine()}-{platform.processor()}"
 
         # Obfuscation: bit-shift + XOR mixture
         seed_val  = (mac << 5) ^ (len(sys_info) * 997) ^ (mac >> 3)
@@ -108,13 +108,14 @@ class Vault:
     def _derive_key_simple(self, unlock_timestamp: float) -> bytes:
         """
         Simple key derivation for short locks (< 5 min).
-        PBKDF2-HMAC-SHA256(machine_seed, str(unlock_timestamp)).
-        No NIST required. Time gate is enforced locally.
+        PBKDF2-HMAC-SHA256(machine_seed, exact_float_string).
         """
+        # We must use EXACTLY the stringification of the float that gets saved to JSON.
+        ts_str = str(unlock_timestamp)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=str(unlock_timestamp).encode("utf-8"),
+            salt=ts_str.encode("utf-8"),
             iterations=100_000,
         )
         return base64.urlsafe_b64encode(kdf.derive(self._machine_seed))
@@ -393,16 +394,20 @@ class Vault:
 
             lock_round   = criteria["lock_round"]
             lock_pulse   = criteria["lock_pulse"]
-            unlock_timestamp = criteria["unlock_timestamp"]
+            # NIST provides exact timestamps, but we enforce formatting for consistency
+            unlock_timestamp = float(f"{criteria['unlock_timestamp']:.6f}")
 
-            key    = self._derive_key(lock_pulse)
-            cipher = Fernet(key)
-            enc_secret = cipher.encrypt(secret_bytes).decode("utf-8")
-            del lock_pulse, key, cipher
+            # Envelope Encryption: True random DEK, wrapped by NIST KEK
+            dek = os.urandom(32)
+            enc_secret = Fernet(base64.urlsafe_b64encode(dek)).encrypt(secret_bytes).decode('utf-8')
+            kek = self._derive_key(lock_pulse)
+            wrapped_dek = self._wrap_file_key(dek, kek)
+            del lock_pulse, kek, dek
 
             record = {
                 "name":             name,
                 "secret_enc":       enc_secret,
+                "wrapped_dek":      wrapped_dek,
                 "lock_round":       lock_round,
                 "unlock_timestamp": unlock_timestamp,
                 "type":             type,
@@ -411,14 +416,16 @@ class Vault:
             }
         else:
             # ── Simple mode (<5 min) ─────────────────────────────────────────
-            key    = self._derive_key_simple(unlock_timestamp)
-            cipher = Fernet(key)
-            enc_secret = cipher.encrypt(secret_bytes).decode("utf-8")
-            del key, cipher
+            dek = os.urandom(32)
+            enc_secret = Fernet(base64.urlsafe_b64encode(dek)).encrypt(secret_bytes).decode('utf-8')
+            kek = self._derive_key_simple(unlock_timestamp)
+            wrapped_dek = self._wrap_file_key(dek, kek)
+            del kek, dek
 
             record = {
                 "name":             name,
                 "secret_enc":       enc_secret,
+                "wrapped_dek":      wrapped_dek,
                 "unlock_timestamp": unlock_timestamp,
                 "type":             type,
                 "filename":         filename,
@@ -481,14 +488,20 @@ class Vault:
             if item.get("type", "text") == "large_file":
                 secret = ""
             else:
-                key    = self._derive_key_simple(unlock_ts)
-                cipher = Fernet(key)
+                kek = self._derive_key_simple(unlock_ts)
                 try:
+                    if "wrapped_dek" in item:
+                        dek = self._unwrap_file_key(item["wrapped_dek"], kek)
+                        cipher = Fernet(base64.urlsafe_b64encode(dek))
+                    else:
+                        cipher = Fernet(kek)
                     secret = cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
                 except InvalidToken:
                     raise VaultError("Decryption failed. Wrong machine, or data tampered.")
                 finally:
-                    del key, cipher
+                    del kek
+                    if 'cipher' in locals(): del cipher
+                    if 'dek' in locals(): del dek
 
         else:
             # ── NIST beacon mode ──────────────────────────────────────────────
@@ -514,14 +527,22 @@ class Vault:
                     raise VaultOfflineError(f"NIST key-derivation fetch failed: {e}")
 
                 # Step 3: Derive key + decrypt.
-                key    = self._derive_key(lock_pulse)
-                cipher = Fernet(key)
+                kek = self._derive_key(lock_pulse)
                 try:
+                    if "wrapped_dek" in item:
+                        dek = self._unwrap_file_key(item["wrapped_dek"], kek)
+                        # unwrapped_file_key returns raw bytes (32 bytes from urandom)
+                        # Fernet requires urlsafe_b64encode of those 32 bytes
+                        cipher = Fernet(base64.urlsafe_b64encode(dek))
+                    else:
+                        cipher = Fernet(kek)
                     secret = cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
                 except InvalidToken:
                     raise VaultError("Decryption failed. Wrong machine, or vault.json tampered.")
                 finally:
-                    del lock_pulse, key, cipher
+                    del lock_pulse, kek
+                    if 'cipher' in locals(): del cipher
+                    if 'dek' in locals(): del dek
 
         return {
             "name":     name,
