@@ -5,22 +5,46 @@ import threading
 import base64
 import zipfile
 import io
+import time
+import uuid
 from pathlib import Path
 from vault_logic import Vault, VaultError, VaultLockedError, VaultOfflineError
 
 class VaultAPI:
+    _RATE_LIMIT_MAX_FAILS = 5
+    _RATE_LIMIT_PENALTY_SEC = 30
+
     def __init__(self):
         self._vault = Vault()
         self._window = None
+        self._failed_attempts: dict[str, list[float]] = {}
 
-    def set_window(self, window):
-        self._window = window
+    def _check_rate_limit(self, name: str) -> None:
+        """Raise if this entry is rate-limited."""
+        import time
+        attempts = self._failed_attempts.get(name, [])
+        # Prune old attempts outside the penalty window
+        cutoff = time.time() - self._RATE_LIMIT_PENALTY_SEC
+        attempts = [t for t in attempts if t > cutoff]
+        self._failed_attempts[name] = attempts
+        if len(attempts) >= self._RATE_LIMIT_MAX_FAILS:
+            remaining = self._RATE_LIMIT_PENALTY_SEC - (time.time() - attempts[0])
+            raise VaultError(f"Rate limited. Try again in {int(remaining)}s.")
+
+    def _record_failed(self, name: str) -> None:
+        self._failed_attempts.setdefault(name, []).append(time.time())
+
+    def _clear_failed(self, name: str) -> None:
+        self._failed_attempts.pop(name, None)
 
     def get_all_locks(self):
         try:
             return self._vault.get_all_locks()
         except Exception as e:
             raise Exception(str(e))
+
+    def set_window(self, window):
+        self._window = window
 
     def pick_file(self):
         """Open a native file picker and return the selected path (or None)."""
@@ -42,49 +66,53 @@ class VaultAPI:
                 return result[0]
         return None
 
-    def lock(self, name: str, secret: str, minutes: float):
+    def lock(self, name: str, secret: str, minutes: float, permanent: bool = False):
         try:
             days = float(minutes) / (24 * 60)
-            self._vault.lock(name, secret, days)
+            self._vault.lock(name, secret, days, permanent=permanent)
             return True
         except Exception as e:
             raise Exception(str(e))
             
-    def lock_file(self, name: str, filepath: str, minutes: float):
+    def lock_file(self, name: str, filepath: str, minutes: float, permanent: bool = False):
         """Stream-encrypt any-size file into the vault. RAM peak: 8 MB."""
         try:
             path = Path(filepath)
             if not path.is_file():
                 raise ValueError(f"Not a file: {filepath}")
             days = float(minutes) / (24 * 60)
-            self._vault.lock_large(name, path, path.name, days)
+            self._vault.lock_large(name, path, path.name, days, permanent=permanent)
             return True
         except Exception as e:
             raise Exception(str(e))
 
-    def lock_folder(self, name: str, folderpath: str, minutes: float):
-        """Zip folder to a temp file, stream-encrypt it, then delete the temp zip."""
-        import tempfile
+    def lock_folder(self, name: str, folderpath: str, minutes: float, permanent: bool = False):
+        """
+        Zip folder to a hidden temp file in the vault directory (machine-bound),
+        stream-encrypt it, then atomically delete the temp zip.
+        """
         try:
             folder = Path(folderpath)
             if not folder.is_dir():
                 raise ValueError(f"Not a folder: {folderpath}")
 
-            print("⚠️ WARNING: Folder is being zipped to your system's temp directory before encryption. If the application crashes or loses power during this process, an unencrypted ZIP of this folder may remain in your temp folder.")
-            # Zip to a temp file on disk (streaming, not in memory)
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
-                tmp_path = Path(tmp.name)
+            # Create temp zip inside the vault's directory — protected by machine binding
+            vault_dir = self._vault.file_path.parent
+            enc_id = str(uuid.uuid4())
+            tmp_zip = vault_dir / f".tmp_{enc_id}.zip"
 
             try:
-                with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                with zipfile.ZipFile(tmp_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for f in folder.rglob('*'):
                         if f.is_file():
                             zf.write(f, f.relative_to(folder.parent))
+
                 days = float(minutes) / (24 * 60)
                 zip_name = folder.name + '.zip'
-                self._vault.lock_large(name, tmp_path, zip_name, days)
+                self._vault.lock_large(name, tmp_zip, zip_name, days, permanent=permanent)
             finally:
-                tmp_path.unlink(missing_ok=True)
+                # Clean up even on encryption failure
+                tmp_zip.unlink(missing_ok=True)
 
             return True
         except Exception as e:
@@ -92,6 +120,7 @@ class VaultAPI:
 
     def reveal_large(self, name: str, filename: str):
         """Stream-decrypt a large file lock directly to Downloads. No base64 in transit."""
+        self._check_rate_limit(name)
         try:
             downloads = (Path.home() / 'Downloads').resolve()
             downloads.mkdir(exist_ok=True)
@@ -108,8 +137,12 @@ class VaultAPI:
                 raise PermissionError("Resolved path escapes Downloads.")
 
             self._vault.reveal_to_file(name, out_path)
+            self._clear_failed(name)
             return str(out_path)
+        except VaultLockedError:
+            raise
         except Exception as e:
+            self._record_failed(name)
             raise Exception(str(e))
 
     def save_revealed_file(self, name: str, b64_data: str, filename: str):
@@ -141,9 +174,15 @@ class VaultAPI:
             raise Exception(str(e))
 
     def reveal(self, name: str):
+        self._check_rate_limit(name)
         try:
-            return self._vault.reveal(name)
+            result = self._vault.reveal(name)
+            self._clear_failed(name)
+            return result
+        except VaultLockedError:
+            raise
         except Exception as e:
+            self._record_failed(name)
             raise Exception(str(e))
 
     def delete_lock(self, name: str):

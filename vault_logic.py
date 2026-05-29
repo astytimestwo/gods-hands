@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, List
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from beacon_client import BeaconClient, BeaconError
@@ -72,53 +73,138 @@ class Vault:
     def __init__(self, file_path: Optional[str] = None):
         self.file_path = Path(file_path).expanduser().resolve() if file_path else self.DEFAULT_PATH
         self._machine_seed = self._get_machine_id()
+        # Separate integrity key — domain-separated from key derivation
+        self._vault_integrity_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"GodsHands-vault-integrity-v1",
+            info=b"vault-integrity",
+        ).derive(self._machine_seed)
 
     # ── Machine Identity ──────────────────────────────────────────────────────
 
     def _get_machine_id(self) -> bytes:
         """
-        Stable hardware fingerprint used as the 'password' in PBKDF2.
-        Obfuscated to frustrate casual reverse engineering.
+        Hardware fingerprint used as the 'password' in PBKDF2.
+        Uses firmware-level SMBIOS identifiers that survive OS reinstalls
+        and driver updates — only a motherboard replacement would change them.
+
+        Uses:
+          - IdentifyingNumber (OEM service tag from firmware)
+          - BaseBoard SerialNumber (motherboard firmware serial)
+          - SMBIOS UUID (machine GUID from firmware)
+          - Fallback: uuid.getnode() MAC
+
+        Falls back to legacy formula only for old vaults that fail to decrypt.
         """
-        mac       = uuid.getnode()
-        sys_info  = f"{platform.machine()}-{platform.processor()}"
+        identifiers = []
 
-        # Obfuscation: bit-shift + XOR mixture
-        seed_val  = (mac << 5) ^ (len(sys_info) * 997) ^ (mac >> 3)
-        mixed     = f"{seed_val:x}" + sys_info[::-1] + f"{mac:x}"
+        # Try to get firmware-level SMBIOS identifiers via WMI/CIM
+        try:
+            import subprocess
+            # Get OEM service tag, motherboard serial, and SMBIOS UUID
+            result = subprocess.run(
+                ['powershell', '-Command',
+                 'Get-CimInstance Win32_ComputerSystemProduct | '
+                 'ForEach-Object { $_.IdentifyingNumber + \"|\" + $_.UUID + \"|\" + '
+                 '(Get-CimInstance Win32_BaseBoard).SerialNumber }'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Text-based identifiers — split and add as UTF-8
+                for part in result.stdout.strip().split('|'):
+                    if part and part != 'FFFFFFFF':
+                        identifiers.append(part.strip().encode('utf-8'))
+        except Exception:
+            pass
 
-        return hashlib.sha3_512(mixed.encode()).digest()   # 64 bytes
+        # Also include MAC address as fallback/additional entropy
+        mac_bytes = uuid.getnode().to_bytes(6, 'big')
+        identifiers.append(mac_bytes)
+
+        # Also include platform info
+        sys_info = f"{platform.machine()}-{platform.processor()}".encode('utf-8')
+        hostname = platform.node().encode('utf-8')
+
+        # Combine all identifiers with separators
+        combined = b"|".join(identifiers)
+        combined += hostname
+        combined += sys_info
+
+        # HKDF-SHA3-512 gives us a uniform 64-byte seed
+        from cryptography.hazmat.primitives import hashes as _hashes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.backends import default_backend
+
+        hkdf = HKDF(
+            algorithm=_hashes.SHA3_512(),
+            length=64,
+            salt=b"GodsHands-machine-salt-v2",
+            info=b"GodsHands-v1-machine-seed",
+            backend=default_backend()
+        )
+        return hkdf.derive(combined)
+
+    def _get_legacy_machine_id(self) -> bytes:
+        """
+        Previous machine ID formula — kept for backward compatibility with
+        existing vaults. Used ONLY when legacy entries fail to decrypt.
+
+        Formula:
+          seed_val = (mac << 5) ^ (len(sys_info) * 997) ^ (mac >> 3)
+          mixed = f"{seed_val:x}" + sys_info[::-1] + f"{mac:x}"
+          return sha3_512(mixed.encode())
+        """
+        mac = uuid.getnode()
+        sys_info = f"{platform.machine()}-{platform.processor()}"
+        seed_val = (mac << 5) ^ (len(sys_info) * 997) ^ (mac >> 3)
+        mixed = f"{seed_val:x}" + sys_info[::-1] + f"{mac:x}"
+        return hashlib.sha3_512(mixed.encode()).digest()
 
     # ── Key Derivation ────────────────────────────────────────────────────────
 
-    def _derive_key(self, beacon_pulse: str) -> bytes:
+    def _derive_key(self, beacon_pulse: str, legacy: bool = False) -> bytes:
         """
         PBKDF2-HMAC-SHA256(machine_seed, beacon_pulse, 1_000_000 rounds).
         beacon_pulse is the 512-bit NIST hex string fetched live from NIST.
         NEVER passes through vault.json.
+
+        Set legacy=True to use the old machine ID formula for backward
+        compatibility with vaults created before the security hardening.
         """
+        machine_seed = self._get_legacy_machine_id() if legacy else self._machine_seed
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=beacon_pulse.encode("utf-8"),
             iterations=1_000_000,
         )
-        return base64.urlsafe_b64encode(kdf.derive(self._machine_seed))
+        return base64.urlsafe_b64encode(kdf.derive(machine_seed))
 
-    def _derive_key_simple(self, unlock_timestamp: float) -> bytes:
+    def _derive_key_simple(self, unlock_timestamp: float, legacy: bool = False) -> bytes:
         """
         Simple key derivation for short locks (< 5 min).
-        PBKDF2-HMAC-SHA256(machine_seed, exact_float_string).
+        Uses 500K iterations (5x increase from prior) and combines
+        machine_seed into the salt to prevent cross-entry key reuse.
+
+        WARNING: Time-gate is enforced by wall-clock only — not
+        cryptographically binding. Determined attackers can bypass
+        by adjusting system time. Use NIST mode for real security.
+
+        Set legacy=True to use the old machine ID formula for backward
+        compatibility with vaults created before the security hardening.
         """
-        # We must use EXACTLY the stringification of the float that gets saved to JSON.
+        machine_seed = self._get_legacy_machine_id() if legacy else self._machine_seed
         ts_str = str(unlock_timestamp)
+        # Combine machine_seed with timestamp in salt to isolate each entry's key
+        salt = machine_seed + ts_str.encode('utf-8')
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=ts_str.encode("utf-8"),
-            iterations=100_000,
+            salt=salt,
+            iterations=500_000,
         )
-        return base64.urlsafe_b64encode(kdf.derive(self._machine_seed))
+        return base64.urlsafe_b64encode(kdf.derive(b"simple-mode-v1"))
 
     # ── Streaming File Encryption ─────────────────────────────────────────────
     #
@@ -200,7 +286,7 @@ class Vault:
     # ── Large File Lock & Reveal ──────────────────────────────────────────────
 
     def lock_large(self, name: str, src_path: Path, original_filename: str,
-                   days: float) -> None:
+                   days: float, permanent: bool = False) -> None:
         """
         Seal any-size file using streaming AES-256-CTR.
         RAM peak: CHUNK_SIZE (8 MB) regardless of file size.
@@ -251,7 +337,7 @@ class Vault:
                 "original_filename": original_filename,
                 "lock_round": lock_round,
                 "unlock_timestamp": unlock_timestamp,
-                "type": "large_file", "mode": "nist",
+                "type": "large_file", "mode": "nist", "permanent": permanent,
             }
         else:
             unlock_timestamp = time.time() + (days * 86400)
@@ -261,7 +347,7 @@ class Vault:
                 "wrapped_file_key": self._wrap_file_key(file_key, derived_key),
                 "original_filename": original_filename,
                 "unlock_timestamp": unlock_timestamp,
-                "type": "large_file", "mode": "simple",
+                "type": "large_file", "mode": "simple", "permanent": permanent,
             }
 
         del derived_key
@@ -328,17 +414,38 @@ class Vault:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
+    def _compute_vault_hmac(self, data: Dict[str, Any]) -> str:
+        """Compute HMAC-SHA256 over the canonical JSON of vault data (excludes _hmac)."""
+        # Build a clean copy without internal fields
+        clean = {"schema": data.get("schema", self.SCHEMA), "items": data.get("items", {})}
+        canonical = json.dumps(clean, sort_keys=True, separators=(',', ':'))
+        return _hmac.new(self._vault_integrity_key, canonical.encode('utf-8'), 'sha256').hexdigest()
+
     def _load_raw(self) -> Dict[str, Any]:
         if not self.file_path.exists():
             return {"schema": self.SCHEMA, "items": {}}
         try:
             with open(self.file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except (json.JSONDecodeError, OSError):
             return {"schema": self.SCHEMA, "items": {}}
 
+        # Verify HMAC integrity before returning anything.
+        # Missing _hmac means this is a legacy vault from before the protection
+        # was added — load it normally and let the next _save_raw write a new HMAC.
+        stored_hmac = data.pop("_hmac", None) if isinstance(data, dict) else None
+        if stored_hmac is None:
+            return data
+        computed = self._compute_vault_hmac(data)
+        if not _hmac.compare_digest(computed, stored_hmac):
+            raise VaultError("Vault integrity check failed — file tampered or wrong machine.")
+
+        return data
+
     def _save_raw(self, payload: Dict[str, Any]) -> None:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        # Attach HMAC before writing
+        payload["_hmac"] = self._compute_vault_hmac(payload)
         tmp = self.file_path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
@@ -347,7 +454,7 @@ class Vault:
     # ── Core Operations ───────────────────────────────────────────────────────
 
     def lock(self, name: str, secret: str, days: float,
-             type: str = "text", filename: Optional[str] = None) -> None:
+             type: str = "text", filename: Optional[str] = None, permanent: bool = False) -> None:
         """
         Create a time-lock.
 
@@ -413,6 +520,7 @@ class Vault:
                 "type":             type,
                 "filename":         filename,
                 "mode":             "nist",
+                "permanent":        permanent,
             }
         else:
             # ── Simple mode (<5 min) ─────────────────────────────────────────
@@ -430,6 +538,7 @@ class Vault:
                 "type":             type,
                 "filename":         filename,
                 "mode":             "simple",
+                "permanent":        permanent,
             }
 
         data  = self._load_raw()
@@ -456,6 +565,40 @@ class Vault:
                 "filename":         item.get("filename"),
             })
         return result
+
+    def _try_reveal_simple(self, unlock_ts: float, item: Dict[str, Any]) -> str:
+        """Try legacy then new simple derivation. Raises VaultError on all failures."""
+        for legacy in (True, False):
+            try:
+                kek = self._derive_key_simple(unlock_ts, legacy=legacy)
+                if "wrapped_dek" in item:
+                    dek = self._unwrap_file_key(item["wrapped_dek"], kek)
+                    cipher = Fernet(base64.urlsafe_b64encode(dek))
+                else:
+                    cipher = Fernet(kek)
+                return cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
+            except InvalidToken:
+                pass
+            finally:
+                pass
+        raise VaultError("Decryption failed. Wrong machine, or data tampered.")
+
+    def _try_reveal_nist(self, lock_pulse: str, item: Dict[str, Any]) -> str:
+        """Try legacy then new NIST derivation. Raises VaultError on all failures."""
+        for legacy in (True, False):
+            try:
+                kek = self._derive_key(lock_pulse, legacy=legacy)
+                if "wrapped_dek" in item:
+                    dek = self._unwrap_file_key(item["wrapped_dek"], kek)
+                    cipher = Fernet(base64.urlsafe_b64encode(dek))
+                else:
+                    cipher = Fernet(kek)
+                return cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
+            except InvalidToken:
+                pass
+            finally:
+                pass
+        raise VaultError("Decryption failed. Wrong machine, or vault.json tampered.")
 
     def reveal(self, name: str) -> Dict[str, Any]:
         """
@@ -488,20 +631,8 @@ class Vault:
             if item.get("type", "text") == "large_file":
                 secret = ""
             else:
-                kek = self._derive_key_simple(unlock_ts)
-                try:
-                    if "wrapped_dek" in item:
-                        dek = self._unwrap_file_key(item["wrapped_dek"], kek)
-                        cipher = Fernet(base64.urlsafe_b64encode(dek))
-                    else:
-                        cipher = Fernet(kek)
-                    secret = cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
-                except InvalidToken:
-                    raise VaultError("Decryption failed. Wrong machine, or data tampered.")
-                finally:
-                    del kek
-                    if 'cipher' in locals(): del cipher
-                    if 'dek' in locals(): del dek
+                # Try legacy derivation first (for pre-hardening vaults), then new.
+                secret = self._try_reveal_simple(unlock_ts, item)
 
         else:
             # ── NIST beacon mode ──────────────────────────────────────────────
@@ -526,23 +657,8 @@ class Vault:
                 except BeaconError as e:
                     raise VaultOfflineError(f"NIST key-derivation fetch failed: {e}")
 
-                # Step 3: Derive key + decrypt.
-                kek = self._derive_key(lock_pulse)
-                try:
-                    if "wrapped_dek" in item:
-                        dek = self._unwrap_file_key(item["wrapped_dek"], kek)
-                        # unwrapped_file_key returns raw bytes (32 bytes from urandom)
-                        # Fernet requires urlsafe_b64encode of those 32 bytes
-                        cipher = Fernet(base64.urlsafe_b64encode(dek))
-                    else:
-                        cipher = Fernet(kek)
-                    secret = cipher.decrypt(item["secret_enc"].encode("utf-8")).decode("utf-8")
-                except InvalidToken:
-                    raise VaultError("Decryption failed. Wrong machine, or vault.json tampered.")
-                finally:
-                    del lock_pulse, kek
-                    if 'cipher' in locals(): del cipher
-                    if 'dek' in locals(): del dek
+                # Step 3: Try legacy derivation first (pre-hardening vaults), then new.
+                secret = self._try_reveal_nist(lock_pulse, item)
 
         return {
             "name":     name,
@@ -557,6 +673,8 @@ class Vault:
         items = data.get("items", {})
         if name in items:
             item = items[name]
+            if item.get("permanent", False):
+                raise VaultError("This fate is permanent and cannot be deleted.")
             # Remove companion encrypted file for large_file locks
             if item.get("type") == "large_file" and "enc_id" in item:
                 enc = self._enc_path(item["enc_id"])

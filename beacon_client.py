@@ -129,14 +129,16 @@ class BeaconClient:
         pulse_ts = cls._parse_ts(data["pulse"]["timeStamp"])
         now_utc  = time.time()
 
-        # Guard: NIST returned a pulse implausibly ahead of wall-clock.
-        if pulse_ts > now_utc + cls.PULSE_INTERVAL:
-            logger.warning("NIST pulse timestamp is ahead of wall-clock — treating as locked.")
+        # Guard: NIST returned a pulse implausibly ahead of local clock.
+        # This detects significant clock skew or API anomalies. 5s tolerance
+        # covers normal network transit jitter; anything more is suspicious.
+        if pulse_ts > now_utc + 5:
+            logger.warning("NIST pulse timestamp is more than 5s ahead of wall-clock.")
             return None
 
-        # Core check: the closest pulse NIST gave us must be within one interval
-        # of the target time to count as "arrived."
-        if pulse_ts < timestamp - cls.PULSE_INTERVAL:
+        # Core check: pulse must be at or after the unlock timestamp.
+        # A pulse from before the unlock moment cannot authorize early reveal.
+        if pulse_ts < timestamp:
             return None
 
         return data["pulse"]["outputValue"]
