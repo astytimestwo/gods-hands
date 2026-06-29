@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Vault data (critical: never publish user secrets)
+data/
+vault.json
+*.enc
+*.key
+*.tmp
+*.log
+
+# Local tool state
+.claude/
+.playwright-mcp/
+.remember/
+docs/superpowers/
+
+# Editors and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local AI models are too large for normal GitHub commits.
+models/
